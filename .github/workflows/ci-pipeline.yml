@@ -1,0 +1,93 @@
+name: CI-CD Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build-test-push-and-update-gitops:
+    runs-on: ubuntu-latest
+
+    env:
+      GHCR_USERNAME: "sarbjit2554"
+      MAIN_REPO: "module_6_part3_main"
+
+    steps:
+      - name: Checkout source repository
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        run: |
+          echo "${{ secrets.CR_PAT }}" | docker login ghcr.io -u "${{ env.GHCR_USERNAME }}" --password-stdin
+
+      - name: Build backend image
+        run: |
+          docker build \
+            -t ghcr.io/${{ env.GHCR_USERNAME }}/${{ env.MAIN_REPO }}-backend:${{ github.sha }} \
+            ./backend
+
+      - name: Build transactions image
+        run: |
+          docker build \
+            -t ghcr.io/${{ env.GHCR_USERNAME }}/${{ env.MAIN_REPO }}-transactions:${{ github.sha }} \
+            ./transactions
+
+      - name: Build studentportfolio image
+        run: |
+          docker build \
+            -t ghcr.io/${{ env.GHCR_USERNAME }}/${{ env.MAIN_REPO }}-studentportfolio:${{ github.sha }} \
+            ./studentportfolio
+
+      - name: Push backend image
+        run: |
+          docker push ghcr.io/${{ env.GHCR_USERNAME }}/${{ env.MAIN_REPO }}-backend:${{ github.sha }}
+
+      - name: Push transactions image
+        run: |
+          docker push ghcr.io/${{ env.GHCR_USERNAME }}/${{ env.MAIN_REPO }}-transactions:${{ github.sha }}
+
+      - name: Push studentportfolio image
+        run: |
+          docker push ghcr.io/${{ env.GHCR_USERNAME }}/${{ env.MAIN_REPO }}-studentportfolio:${{ github.sha }}
+
+      - name: Dummy tests (placeholder)
+        run: |
+          echo "No automated tests yet. This step exists to represent the 'test' phase."
+
+      - name: Configure Git identity
+        run: |
+          git config --global user.name "${{ env.GHCR_USERNAME }}"
+          git config --global user.email "${{ env.GHCR_USERNAME }}@users.noreply.github.com"
+
+      - name: Clone GitOps repository
+        run: |
+          git clone \
+            https://x-access-token:${{ secrets.GITOPS_PAT }}@github.com/${{ secrets.GITOPS_REPO }}.git \
+            gitops
+
+      - name: Update image tags in GitOps k8s manifests
+        working-directory: gitops
+        run: |
+          SHA=${{ github.sha }}
+
+          # backend deployment
+          sed -i "s#ghcr.io/${{ env.GHCR_USERNAME }}/${{ env.MAIN_REPO }}-backend:.*#ghcr.io/${{ env.GHCR_USERNAME }}/${{ env.MAIN_REPO }}-backend:${SHA}#g" k8s/10-backend-deployment.yaml
+
+          # transactions deployment
+          sed -i "s#ghcr.io/${{ env.GHCR_USERNAME }}/${{ env.MAIN_REPO }}-transactions:.*#ghcr.io/${{ env.GHCR_USERNAME }}/${{ env.MAIN_REPO }}-transactions:${SHA}#g" k8s/20-transactions-deployment.yaml
+
+          # studentportfolio deployment
+          sed -i "s#ghcr.io/${{ env.GHCR_USERNAME }}/${{ env.MAIN_REPO }}-studentportfolio:.*#ghcr.io/${{ env.GHCR_USERNAME }}/${{ env.MAIN_REPO }}-studentportfolio:${SHA}#g" k8s/30-studentportfolio-deployment.yaml
+
+          echo "Updated image tags in k8s manifests to SHA ${SHA}"
+
+      - name: Commit and push updated manifests to GitOps repo
+        working-directory: gitops
+        run: |
+          if git status --porcelain | grep .; then
+            git add k8s/10-backend-deployment.yaml k8s/20-transactions-deployment.yaml k8s/30-studentportfolio-deployment.yaml
+            git commit -m "Update image tags to ${GITHUB_SHA}"
+            git push
+          else
+            echo "No changes to commit in GitOps repo."
+          fi
